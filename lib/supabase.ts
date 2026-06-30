@@ -3,50 +3,61 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 // Lazy initialization of Supabase client to avoid build-time errors
 let supabaseInstance: SupabaseClient | null = null;
 
-function getSupabaseClient(): SupabaseClient {
-  if (!supabaseInstance) {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+function getSupabaseClient(): SupabaseClient | null {
+  if (supabaseInstance) return supabaseInstance;
 
-    if (!supabaseUrl || !supabaseAnonKey) {
-      throw new Error('Missing Supabase environment variables');
-    }
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-    supabaseInstance = createClient(supabaseUrl, supabaseAnonKey);
+  if (!supabaseUrl || !supabaseAnonKey) {
+    console.warn('Missing Supabase environment variables');
+    return null;
   }
+
+  supabaseInstance = createClient(supabaseUrl, supabaseAnonKey);
   return supabaseInstance;
 }
 
-// Export a getter function for use in components
-export const supabase = {
-  get auth() {
-    return getSupabaseClient().auth;
-  },
-  get from() {
-    return getSupabaseClient().from.bind(getSupabaseClient());
-  },
-  get rpc() {
-    return getSupabaseClient().rpc.bind(getSupabaseClient());
-  },
-  get storage() {
-    return getSupabaseClient().storage;
-  },
-  get realtime() {
-    return getSupabaseClient().realtime;
-  },
-  get functions() {
-    return getSupabaseClient().functions;
-  },
-  get channel() {
-    return getSupabaseClient().channel.bind(getSupabaseClient());
-  },
-  get removeChannel() {
-    return getSupabaseClient().removeChannel.bind(getSupabaseClient());
-  },
-  get removeAllChannels() {
-    return getSupabaseClient().removeAllChannels.bind(getSupabaseClient());
-  },
-} as unknown as SupabaseClient;
+// Safe wrapper for Supabase client that handles missing config
+function createSafeProxy(): SupabaseClient {
+  const handler: ProxyHandler<object> = {
+    get(target, prop) {
+      const client = getSupabaseClient();
+      if (!client) {
+        // Return safe fallbacks for common operations
+        if (prop === 'auth') {
+          return {
+            signInWithPassword: async () => ({ error: new Error('Supabase not configured') }),
+            signUp: async () => ({ error: new Error('Supabase not configured'), data: null }),
+            signOut: async () => {},
+            getSession: async () => ({ data: { session: null } }),
+            resetPasswordForEmail: async () => ({ error: new Error('Supabase not configured') }),
+            onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+          };
+        }
+        if (prop === 'from') {
+          return () => ({
+            select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }),
+            insert: async () => ({ error: new Error('Supabase not configured') }),
+            update: async () => ({ error: new Error('Supabase not configured') }),
+          });
+        }
+        return () => {};
+      }
+      if (typeof prop === 'string') {
+        const value = (client as unknown as Record<string, unknown>)[prop];
+        if (typeof value === 'function') {
+          return value.bind(client);
+        }
+        return value;
+      }
+      return undefined;
+    },
+  };
+  return new Proxy({}, handler) as unknown as SupabaseClient;
+}
+
+export const supabase = createSafeProxy();
 
 // Type definitions
 export type Profile = {
